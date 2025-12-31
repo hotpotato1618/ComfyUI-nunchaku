@@ -68,7 +68,7 @@ class NunchakuFluxLoraLoader:
                         "default": 1.0,
                         "min": -100.0,
                         "max": 100.0,
-                        "step": 0.01,
+                        "step": 0.05,
                         "tooltip": "Default strength. Overridden if the text input contains a strength value (e.g. <lora:name:0.8>).",
                     },
                 ),
