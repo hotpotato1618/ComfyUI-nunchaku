@@ -60,7 +60,7 @@ class NunchakuFluxLoraLoader:
                 ),
                 "lora_name": (
                     get_filename_list("loras"),
-                    {"tooltip": "The file name of the LoRA."},
+                    {"tooltip": "The file name of the LoRA (used if toggle is OFF)."},
                 ),
                 "lora_strength": (
                     "FLOAT",
@@ -69,8 +69,23 @@ class NunchakuFluxLoraLoader:
                         "min": -100.0,
                         "max": 100.0,
                         "step": 0.01,
-                        "tooltip": "How strongly to modify the diffusion model. This value can be negative.",
+                        "tooltip": "Default strength. Overridden if the text input contains a strength value (e.g. <lora:name:0.8>).",
                     },
+                ),
+                "use_text_input": (
+                    "BOOLEAN", 
+                    {
+                        "default": False, 
+                        "label_on": "True", 
+                        "label_off": "False",
+                        "tooltip": "Enable to use the 'lora_text' input instead of the dropdown."
+                    }
+                ),
+            },
+            "optional": {
+                "lora_text": (
+                    "STRING", 
+                    {"forceInput": True, "tooltip": "Input string for LoRA filename or <lora:name:strength> tag."}
                 ),
             }
         }
@@ -82,40 +97,103 @@ class NunchakuFluxLoraLoader:
 
     CATEGORY = "Nunchaku"
     DESCRIPTION = (
-        "LoRAs are used to modify the diffusion model, "
-        "altering the way in which latents are denoised such as applying styles. "
-        "You can link multiple LoRA nodes."
+        "LoRAs are used to modify the diffusion model. "
+        "Enable 'Use Input Slot' to drive this node via text wildcards."
     )
 
-    def load_lora(self, model, lora_name: str, lora_strength: float):
+    def load_lora(self, model, lora_name, lora_strength, use_text_input=False, lora_text=None):
         """
-        Apply a LoRA to a Nunchaku FLUX diffusion model.
+        Apply a LoRA to a Nunchaku FLUX diffusion model with Auto-Discovery for subfolders.
 
         Parameters
         ----------
         model : object
             The diffusion model to modify.
         lora_name : str
-            The name of the LoRA to apply.
+            The name of the LoRA from the widget.
         lora_strength : float
-            The strength with which to apply the LoRA.
+            The strength from the widget.
+        use_text_input : bool
+            Whether to use the text input instead of the widget.
+        lora_text : str
+            The text input string (can contain tags).
 
         Returns
         -------
         tuple
             A tuple containing the modified diffusion model.
         """
-        if abs(lora_strength) < 1e-5:
+        import re
+        import os
+
+        # Variables to hold the final decision
+        target_lora_name = lora_name
+        target_lora_strength = lora_strength
+
+        # --- LOGIC: Handle Text Input & Parsing ---
+        if use_text_input and lora_text and isinstance(lora_text, str) and lora_text.strip():
+            # 1. Regex to find <lora:name:strength>
+            match = re.search(r"<lora:([^:>]+)(?::([0-9.-]+))?>", lora_text)
+            
+            extracted_name = ""
+            if match:
+                extracted_name = match.group(1)
+                if match.group(2):
+                    try:
+                        target_lora_strength = float(match.group(2))
+                    except ValueError:
+                        pass
+            else:
+                # Cleanup if no tag found (e.g. "lora_name, trigger")
+                if "," in lora_text:
+                    extracted_name = lora_text.split(",")[0].strip()
+                else:
+                    extracted_name = lora_text.strip()
+
+            # --- SMART SEARCH: Find the file in subfolders ---
+            # Get list of all available LoRAs (e.g. ["folder/file.safetensors", ...])
+            all_loras = get_filename_list("loras")
+            
+            # If the exact extracted name isn't in the list, try to find it by filename base
+            if extracted_name not in all_loras:
+                found_path = None
+                
+                # Normalize extracted name (remove extension for comparison)
+                search_base = os.path.splitext(extracted_name)[0]
+                
+                for candidate in all_loras:
+                    # candidate is the full relative path: "02-Flux/Style/File.safetensors"
+                    candidate_base = os.path.splitext(os.path.basename(candidate))[0]
+                    
+                    # specific check: if the filename matches exactly
+                    if candidate_base == search_base:
+                        found_path = candidate
+                        break
+                
+                if found_path:
+                    target_lora_name = found_path
+                else:
+                    # If not found, pass the extracted name through 
+                    target_lora_name = extracted_name
+                    # Ensure extension exists for the error message/fallback
+                    if not target_lora_name.lower().endswith((".safetensors", ".pt", ".ckpt")):
+                        target_lora_name += ".safetensors"
+            else:
+                target_lora_name = extracted_name
+        # ------------------------------------------
+
+        if abs(target_lora_strength) < 1e-5:
             return (model,)  # If the strength is too small, return the original model
 
         model_wrapper = model.model.diffusion_model
         assert isinstance(model_wrapper, ComfyFluxWrapper)
 
-        lora_path = get_full_path_or_raise("loras", lora_name)
+        # Use the determined path (which now includes subfolders)
+        lora_path = get_full_path_or_raise("loras", target_lora_name)
 
         ret_model_wrapper, ret_model = copy_with_ctx(model_wrapper)
 
-        ret_model_wrapper.loras = [*model_wrapper.loras, (lora_path, lora_strength)]
+        ret_model_wrapper.loras = [*model_wrapper.loras, (lora_path, target_lora_strength)]
         sd = to_diffusers(lora_path)
 
         # To handle FLUX.1 tools LoRAs, which change the number of input channels
