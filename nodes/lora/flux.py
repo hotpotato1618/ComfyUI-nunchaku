@@ -22,32 +22,12 @@ logger = logging.getLogger(__name__)
 class NunchakuFluxLoraLoader:
     """
     Node for loading and applying a LoRA to a Nunchaku FLUX model.
-
-    Attributes
-    ----------
-    RETURN_TYPES : tuple
-        The return type of the node ("MODEL",).
-    OUTPUT_TOOLTIPS : tuple
-        Tooltip for the output.
-    FUNCTION : str
-        The function to call ("load_lora").
-    TITLE : str
-        Node title.
-    CATEGORY : str
-        Node category.
-    DESCRIPTION : str
-        Node description.
     """
 
     @classmethod
     def INPUT_TYPES(s):
         """
         Defines the input types and tooltips for the node.
-
-        Returns
-        -------
-        dict
-            A dictionary specifying the required inputs and their descriptions for the node interface.
         """
         return {
             "required": {
@@ -69,7 +49,7 @@ class NunchakuFluxLoraLoader:
                         "min": -100.0,
                         "max": 100.0,
                         "step": 0.05,
-                        "tooltip": "Default strength. Overridden if the text input contains a strength value (e.g. <lora:name:0.8>).",
+                        "tooltip": "Default strength. Used if 'Force Node Strength' is ON, or if text input has no strength tag.",
                     },
                 ),
                 "use_text_input": (
@@ -79,6 +59,15 @@ class NunchakuFluxLoraLoader:
                         "label_on": "True", 
                         "label_off": "False",
                         "tooltip": "Enable to use the 'lora_text' input instead of the dropdown."
+                    }
+                ),
+                "use_node_strength": (
+                    "BOOLEAN", 
+                    {
+                        "default": False, 
+                        "label_on": "True", 
+                        "label_off": "False",
+                        "tooltip": "If True, ignores the strength value inside the text tag and forces the slider value."
                     }
                 ),
             },
@@ -101,27 +90,9 @@ class NunchakuFluxLoraLoader:
         "Enable 'Use Input Slot' to drive this node via text wildcards."
     )
 
-    def load_lora(self, model, lora_name, lora_strength, use_text_input=False, lora_text=None):
+    def load_lora(self, model, lora_name, lora_strength, use_text_input=False, use_node_strength=False, lora_text=None):
         """
         Apply a LoRA to a Nunchaku FLUX diffusion model with Auto-Discovery for subfolders.
-
-        Parameters
-        ----------
-        model : object
-            The diffusion model to modify.
-        lora_name : str
-            The name of the LoRA from the widget.
-        lora_strength : float
-            The strength from the widget.
-        use_text_input : bool
-            Whether to use the text input instead of the widget.
-        lora_text : str
-            The text input string (can contain tags).
-
-        Returns
-        -------
-        tuple
-            A tuple containing the modified diffusion model.
         """
         import re
         import os
@@ -138,7 +109,9 @@ class NunchakuFluxLoraLoader:
             extracted_name = ""
             if match:
                 extracted_name = match.group(1)
-                if match.group(2):
+                
+                # Check for strength in text, but ONLY update if use_node_strength is False
+                if match.group(2) and not use_node_strength:
                     try:
                         target_lora_strength = float(match.group(2))
                     except ValueError:
@@ -158,12 +131,19 @@ class NunchakuFluxLoraLoader:
             if extracted_name not in all_loras:
                 found_path = None
                 
-                # Normalize extracted name (remove extension for comparison)
-                search_base = os.path.splitext(extracted_name)[0]
+                # FIX: Don't use os.path.splitext blindly because it kills names like "V2.5"
+                # Only strip extension if it's a known model extension.
+                valid_exts = (".safetensors", ".pt", ".ckpt", ".bin")
+                if extracted_name.lower().endswith(valid_exts):
+                    search_base = os.path.splitext(extracted_name)[0]
+                else:
+                    search_base = extracted_name
                 
                 for candidate in all_loras:
                     # candidate is the full relative path: "02-Flux/Style/File.safetensors"
-                    candidate_base = os.path.splitext(os.path.basename(candidate))[0]
+                    candidate_filename = os.path.basename(candidate)
+                    # We strip the extension from the candidate file on disk to compare
+                    candidate_base = os.path.splitext(candidate_filename)[0]
                     
                     # specific check: if the filename matches exactly
                     if candidate_base == search_base:
@@ -176,7 +156,7 @@ class NunchakuFluxLoraLoader:
                     # If not found, pass the extracted name through 
                     target_lora_name = extracted_name
                     # Ensure extension exists for the error message/fallback
-                    if not target_lora_name.lower().endswith((".safetensors", ".pt", ".ckpt")):
+                    if not target_lora_name.lower().endswith(valid_exts):
                         target_lora_name += ".safetensors"
             else:
                 target_lora_name = extracted_name
@@ -207,7 +187,6 @@ class NunchakuFluxLoraLoader:
                 ret_model.model.model_config.unet_config["in_channels"] = new_in_channels
 
         return (ret_model,)
-
 
 class NunchakuFluxLoraStack:
     """
